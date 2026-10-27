@@ -35,15 +35,14 @@ PROXY_LIST = [
 class TaxInvoiceScraperApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("发票查验自动化助手 (高级配置版 - 支持双版本)")
-        self.root.geometry("620x540")
+        self.root.title("发票查验自动化助手 (高级配置版)")
+        self.root.geometry("620x490")
 
         self.input_folder = tk.StringVar()
         self.save_folder = tk.StringVar()
         self.selected_proxy = tk.StringVar(value=PROXY_LIST[0])
         self.orientation_mode = tk.StringVar(value="横向 (默认)")
         self.speed_mode = tk.StringVar(value="正常速度")
-        self.version_mode = tk.StringVar(value="旧版")  # 默认旧版
         self.is_running = False
         self.driver = None
 
@@ -64,13 +63,6 @@ class TaxInvoiceScraperApp:
         tk.Label(frame_save, text="保存目录:").pack(side=tk.LEFT)
         tk.Entry(frame_save, textvariable=self.save_folder, width=35, state="readonly").pack(side=tk.LEFT, padx=10)
         tk.Button(frame_save, text="📁 浏览", command=self.choose_save_folder).pack(side=tk.LEFT)
-
-        frame_version = tk.Frame(self.root)
-        frame_version.pack(pady=5, fill=tk.X, padx=20)
-        tk.Label(frame_version, text="网站版本:").pack(side=tk.LEFT)
-        tk.Radiobutton(frame_version, text="旧版 (默认)", variable=self.version_mode, value="旧版").pack(side=tk.LEFT,
-                                                                                                         padx=10)
-        tk.Radiobutton(frame_version, text="新版", variable=self.version_mode, value="新版").pack(side=tk.LEFT)
 
         frame_settings = tk.Frame(self.root)
         frame_settings.pack(pady=10, fill=tk.X, padx=20)
@@ -168,14 +160,13 @@ class TaxInvoiceScraperApp:
         self.btn_start.config(state=tk.DISABLED)
         self.btn_stop.config(state=tk.NORMAL)
 
-        mode_str = self.version_mode.get()
-        self.log(f"当前选用: [{mode_str}]，总计找到 {len(target_files)} 个文件，准备核对断点状态...")
+        self.log(f"总计找到 {len(target_files)} 个文件，准备核对断点状态...")
 
         self.img_dir = os.path.join(os.getcwd(), "img")
         os.makedirs(self.img_dir, exist_ok=True)
         os.makedirs(self.res_dir, exist_ok=True)
 
-        threading.Thread(target=self.run_automation, args=(target_files, mode_str), daemon=True).start()
+        threading.Thread(target=self.run_automation, args=(target_files,), daemon=True).start()
 
     def stop_task(self):
         self.is_running = False
@@ -327,9 +318,7 @@ class TaxInvoiceScraperApp:
             self.log(f"OCR识别错误: {e}")
             return ""
 
-    def run_automation(self, target_files, mode_str):
-        is_new_ver = (mode_str == "新版")
-
+    def run_automation(self, target_files):
         try:
             self.log("正在扫描保存目录，智能跳过已处理的文件...")
             existing_results = os.listdir(self.res_dir) if os.path.exists(self.res_dir) else []
@@ -358,7 +347,6 @@ class TaxInvoiceScraperApp:
 
             wait = WebDriverWait(self.driver, 15)
 
-            # 【核心修改】：将原本单纯的列表改为 (文件路径, 已重试次数) 构成的队列
             queue = [(f, 0) for f in pending_files]
             task_index = 0
 
@@ -366,7 +354,6 @@ class TaxInvoiceScraperApp:
                 if not self.is_running:
                     break
 
-                # 从队列头部取出一个文件进行处理
                 file_path, retry_count = queue.pop(0)
                 task_index += 1
 
@@ -375,52 +362,60 @@ class TaxInvoiceScraperApp:
                         f"--- 正在处理第 {task_index} 次任务 (剩余 {len(queue)}): {os.path.basename(file_path)} ---")
 
                     # ================== 1. 初始化访问与上传 ==================
-                    if is_new_ver:
-                        self.driver.get("https://inv-veri.chinatax.gov.cn/fpcygzfw/national-invoice-check")
-                        self.simulate_human_delay(2.0, 4.0)
-                        file_cy_btn = wait.until(EC.element_to_be_clickable(
-                            (By.XPATH, '/html/body/div[1]/div[2]/div/div[1]/div[1]/div[2]/button[2]')))
-                        ActionChains(self.driver).move_to_element(file_cy_btn).pause(
-                            random.uniform(0.5, 1.2)).click().perform()
-                        self.simulate_human_delay(0.8, 1.5)
+                    self.driver.get("https://inv-veri.chinatax.gov.cn/fpcygzfw/national-invoice-check")
+                    self.simulate_human_delay(2.0, 4.0)
+                    file_cy_btn = wait.until(EC.element_to_be_clickable(
+                        (By.XPATH, '/html/body/div[1]/div[2]/div/div[1]/div[1]/div[2]/button[2]')))
+                    ActionChains(self.driver).move_to_element(file_cy_btn).pause(
+                        random.uniform(0.5, 1.2)).click().perform()
+                    self.simulate_human_delay(0.8, 1.5)
+                    try:
                         try:
-                            try:
-                                file_input = self.driver.find_element(By.XPATH,
-                                                                      '/html/body/div[6]/div[2]/div/div/div[2]/div[1]/div/div/div[1]/div')
-                                if file_input.tag_name != 'input':
-                                    file_input = file_input.find_element(By.XPATH, './/input[@type="file"]')
-                            except:
-                                file_input = self.driver.find_element(By.XPATH, '//input[@type="file"]')
-                            file_input.send_keys(file_path)
-                        except Exception as e:
-                            self.log(f"上传文件失败: {e}")
-                            continue
-
-                        self.log("文件路径已输入，等待2秒...")
-                        time.sleep(2)
-                        import_btn = wait.until(EC.element_to_be_clickable(
-                            (By.XPATH, '/html/body/div[6]/div[2]/div/div/div[3]/div/button[2]/span')))
-                        ActionChains(self.driver).move_to_element(import_btn).click().perform()
-
-                    else:
-                        self.driver.get("https://inv-veri.chinatax.gov.cn/index.html")
-                        self.simulate_human_delay(2.0, 4.0)
-                        file_cy_btn = wait.until(EC.element_to_be_clickable((By.XPATH, '//*[@id="fileCy"]')))
-                        ActionChains(self.driver).move_to_element(file_cy_btn).pause(
-                            random.uniform(0.5, 1.2)).click().perform()
-                        self.simulate_human_delay(0.8, 1.5)
-                        try:
+                            file_input = self.driver.find_element(By.XPATH,
+                                                                  '/html/body/div[6]/div[2]/div/div/div[2]/div[1]/div/div/div[1]/div')
+                            if file_input.tag_name != 'input':
+                                file_input = file_input.find_element(By.XPATH, './/input[@type="file"]')
+                        except:
                             file_input = self.driver.find_element(By.XPATH, '//input[@type="file"]')
-                            file_input.send_keys(file_path)
-                        except Exception as e:
-                            self.log(f"上传文件失败: {e}")
-                            continue
-                        self.simulate_human_delay(0.8, 1.5)
-                        import_btn = wait.until(EC.element_to_be_clickable((By.XPATH, '//*[@id="fileCyBtn"]')))
-                        ActionChains(self.driver).move_to_element(import_btn).click().perform()
+                        file_input.send_keys(file_path)
+                    except Exception as e:
+                        self.log(f"上传文件失败: {e}")
+                        continue
+
+                    self.log("文件路径已输入，正在等待系统解析 (最长30秒)...")
+                    try:
+                        # 0.2秒高频轮询，动态捕获包含“成功”的气泡
+                        WebDriverWait(self.driver, 30, poll_frequency=0.2).until(
+                            lambda d: any(
+                                "成功" in p.text for p in (
+                                        d.find_elements(By.XPATH, '/html/body/div[6]/div') +
+                                        d.find_elements(By.XPATH, '/html/body/div[7]/div') +
+                                        d.find_elements(By.XPATH, '/html/body/div[8]/div')
+                                ) if p.is_displayed()
+                            )
+                        )
+                        self.log("✅ 瞬间捕获到导入成功弹窗！准备点击确认...")
+                        time.sleep(0.5)  # 稍微等待半秒让前端按钮状态刷新
+                    except Exception:
+                        self.log("❌ 30秒超时未检测到导入成功提示，判断为导入失败，触发重试...")
+                        continue
+
+                    try:
+                        import_btns_elem = WebDriverWait(self.driver, 10).until(
+                            lambda d: (d.find_elements(By.XPATH,
+                                                       '/html/body/div[7]/div[2]/div/div/div[3]/div/button[2]/span') or
+                                       d.find_elements(By.XPATH,
+                                                       '/html/body/div[7]/div[2]/div/div/div[3]/div/button[2]') or
+                                       d.find_elements(By.XPATH, '//button[span[contains(text(), "导入")]]'))
+                        )
+                        self.driver.execute_script("arguments[0].click();", import_btns_elem[0])
+                        self.log("✅ 成功点击导入按钮！")
+                    except Exception as e:
+                        self.log(f"❌ 等待导入按钮超时: {e}")
+                        continue
 
                     self.log("等待验证码生成或校验弹窗...")
-                    self.simulate_human_delay(2.0, 3.5)
+                    self.simulate_human_delay(0.8, 1.5)
 
                     # ================== 2. 导入异常侦听 ==================
                     skip_current_file = False
@@ -438,7 +433,6 @@ class TaxInvoiceScraperApp:
                                         time.sleep(1)
                                     self.driver.execute_script("arguments[0].click();", early_popups[0])
 
-                                    # 同样应用重试限制
                                     if retry_count < 3:
                                         self.log("✅ 62秒等待结束，将当前发票移至队列尾部稍后重试...")
                                         queue.append((file_path, retry_count + 1))
@@ -489,16 +483,10 @@ class TaxInvoiceScraperApp:
                         except Exception:
                             pass
 
-                        if is_new_ver:
-                            yzm_img_element = wait.until(EC.visibility_of_element_located((By.XPATH,
-                                                                                           '/html/body/div[1]/div[2]/div/div[1]/div[1]/div[3]/form/div[6]/div/div/div/a/img')))
-                            yzminfo_element = wait.until(EC.presence_of_element_located((By.XPATH,
-                                                                                         '/html/body/div[1]/div[2]/div/div[1]/div[1]/div[3]/form/div[5]/div[2]/div/div[2]')))
-                        else:
-                            yzm_img_element = wait.until(
-                                EC.visibility_of_element_located((By.XPATH, '//*[@id="yzm_img"]')))
-                            yzminfo_element = wait.until(
-                                EC.presence_of_element_located((By.XPATH, '//*[@id="yzminfo"]')))
+                        yzm_img_element = wait.until(EC.visibility_of_element_located((By.XPATH,
+                                                                                       '/html/body/div[1]/div[2]/div/div[1]/div[1]/div[3]/form/div[6]/div/div/div/a/img')))
+                        yzminfo_element = wait.until(EC.presence_of_element_located((By.XPATH,
+                                                                                     '/html/body/div[1]/div[2]/div/div[1]/div[1]/div[3]/form/div[5]/div[2]/div/div[2]')))
 
                         self.simulate_human_delay(1.5, 2.5)
                         hint_text = yzminfo_element.text.strip()
@@ -524,12 +512,8 @@ class TaxInvoiceScraperApp:
                             self.log(f"➡ 识别结果: {ocr_result}")
 
                             if ocr_result:
-                                if is_new_ver:
-                                    yzm_input = self.driver.find_element(By.XPATH,
-                                                                         '/html/body/div[1]/div[2]/div/div[1]/div[1]/div[3]/form/div[5]/div[2]/div/div[1]/div/input')
-                                else:
-                                    yzm_input = self.driver.find_element(By.XPATH, '//*[@id="yzm"]')
-
+                                yzm_input = self.driver.find_element(By.XPATH,
+                                                                     '/html/body/div[1]/div[2]/div/div[1]/div[1]/div[3]/form/div[5]/div[2]/div/div[1]/div/input')
                                 yzm_input.click()
                                 time.sleep(0.1)
                                 yzm_input.send_keys(Keys.CONTROL, 'a')
@@ -549,44 +533,43 @@ class TaxInvoiceScraperApp:
                                 continue
 
                         self.simulate_human_delay(0.5, 1.0)
-                        if is_new_ver:
-                            checkfp_btn = self.driver.find_element(By.XPATH,
-                                                                   '/html/body/div[1]/div[2]/div/div[1]/div[1]/div[3]/form/div[7]/div/div/button[1]/span')
-                        else:
-                            checkfp_btn = self.driver.find_element(By.XPATH, '//*[@id="checkfp"]')
+                        checkfp_btn = self.driver.find_element(By.XPATH,
+                                                               '/html/body/div[1]/div[2]/div/div[1]/div[1]/div[3]/form/div[7]/div/div/button[1]/span')
 
                         self.driver.execute_script("arguments[0].click();", checkfp_btn)
                         self.log("已点击查验，等待网页响应...")
 
                         # ================== 4. 侦听响应结果 ==================
                         try:
-                            if is_new_ver:
-                                WebDriverWait(self.driver, 10).until(
-                                    lambda d: d.find_elements(By.XPATH, '//*[@id="popup_ok"]') or \
-                                              d.find_elements(By.XPATH, '/html/body/div[6]/div') or \
-                                              d.find_elements(By.XPATH, '//*[@id="print-btn"]')
-                                )
-                            else:
-                                WebDriverWait(self.driver, 10).until(
-                                    lambda d: d.find_elements(By.XPATH, '//*[@id="popup_ok"]') or \
-                                              d.find_elements(By.XPATH, '//*[@id="dialog-body"]')
-                                )
+                            # 扩大侦听范围，兼容 div[6], div[7], div[8] 各种可能的动态弹窗层级
+                            WebDriverWait(self.driver, 10).until(
+                                lambda d: d.find_elements(By.XPATH, '//*[@id="popup_ok"]') or \
+                                          d.find_elements(By.XPATH, '/html/body/div[6]/div') or \
+                                          d.find_elements(By.XPATH, '/html/body/div[7]/div') or \
+                                          d.find_elements(By.XPATH, '/html/body/div[8]/div') or \
+                                          d.find_elements(By.XPATH, '//*[@id="print-btn"]')
+                            )
                         except:
                             self.log("等待响应超时或未检测到明确状态，继续执行...")
 
-                        # 新版专属错误提示（顶部弹窗）
-                        if is_new_ver:
-                            new_error_popups = self.driver.find_elements(By.XPATH, '/html/body/div[6]/div')
-                            if new_error_popups and new_error_popups[0].is_displayed():
-                                msg = new_error_popups[0].text.strip()
-                                if "验证码" in msg or "失败" in msg or "不对" in msg:
-                                    self.log(f"⚠ 捕获到顶部弹窗提示: {msg}")
-                                    self.log("验证码识别失败，正在点击图片刷新重试...")
+                        # 优先抓取 div[7] 弹窗，作为防线依次检查 6 和 8
+                        new_error_popups = (self.driver.find_elements(By.XPATH, '/html/body/div[7]/div') or
+                                            self.driver.find_elements(By.XPATH, '/html/body/div[8]/div') or
+                                            self.driver.find_elements(By.XPATH, '/html/body/div[6]/div'))
+
+                        if new_error_popups and new_error_popups[0].is_displayed():
+                            msg = new_error_popups[0].text.strip()
+                            if "验证码" in msg or "失败" in msg or "不对" in msg or "错误" in msg:
+                                self.log(f"⚠ 捕获到顶部红色弹窗提示: {msg}")
+                                self.log("验证码识别失败，正在点击图片刷新重试...")
+                                try:
                                     yzm_img_element = self.driver.find_element(By.XPATH,
                                                                                '/html/body/div[1]/div[2]/div/div[1]/div[1]/div[3]/form/div[6]/div/div/div/a/img')
                                     self.driver.execute_script("arguments[0].click();", yzm_img_element)
                                     self.simulate_human_delay(2.0, 3.0)
-                                    continue
+                                except Exception as e:
+                                    self.log(f"刷新验证码图片失败: {e}")
+                                continue
 
                         # 通用弹窗侦听
                         popups = self.driver.find_elements(By.XPATH, '//*[@id="popup_ok"]')
@@ -610,95 +593,90 @@ class TaxInvoiceScraperApp:
 
                             if "验证码" in msg:
                                 self.log("验证码识别失败，正在点击图片刷新重试...")
-                                if is_new_ver:
+                                try:
                                     yzm_img_element = self.driver.find_element(By.XPATH,
                                                                                '/html/body/div[1]/div[2]/div/div[1]/div[1]/div[3]/form/div[6]/div/div/div/a/img')
-                                else:
-                                    yzm_img_element = self.driver.find_element(By.XPATH, '//*[@id="yzm_img"]')
-                                self.driver.execute_script("arguments[0].click();", yzm_img_element)
-                                self.simulate_human_delay(2.0, 3.0)
+                                    self.driver.execute_script("arguments[0].click();", yzm_img_element)
+                                    self.simulate_human_delay(2.0, 3.0)
+                                except:
+                                    pass
                                 continue
                             else:
                                 self.log("检测到非验证码异常，正在刷新网页重新导入文件...")
-                                if is_new_ver:
-                                    self.driver.get("https://inv-veri.chinatax.gov.cn/fpcygzfw/national-invoice-check")
-                                    self.simulate_human_delay(2.0, 4.0)
+                                self.driver.get("https://inv-veri.chinatax.gov.cn/fpcygzfw/national-invoice-check")
+                                self.simulate_human_delay(2.0, 4.0)
+                                try:
+                                    file_cy_btn = WebDriverWait(self.driver, 10).until(EC.element_to_be_clickable(
+                                        (By.XPATH, '/html/body/div[1]/div[2]/div/div[1]/div[1]/div[2]/button[2]')))
+                                    ActionChains(self.driver).move_to_element(file_cy_btn).pause(
+                                        random.uniform(0.5, 1.2)).click().perform()
+                                    self.simulate_human_delay(0.8, 1.5)
                                     try:
-                                        file_cy_btn = WebDriverWait(self.driver, 10).until(EC.element_to_be_clickable(
-                                            (By.XPATH, '/html/body/div[1]/div[2]/div/div[1]/div[1]/div[2]/button[2]')))
-                                        ActionChains(self.driver).move_to_element(file_cy_btn).pause(
-                                            random.uniform(0.5, 1.2)).click().perform()
-                                        self.simulate_human_delay(0.8, 1.5)
-                                        try:
-                                            file_input = self.driver.find_element(By.XPATH,
-                                                                                  '/html/body/div[6]/div[2]/div/div/div[2]/div[1]/div/div/div[1]/div')
-                                            if file_input.tag_name != 'input':
-                                                file_input = file_input.find_element(By.XPATH, './/input[@type="file"]')
-                                        except:
-                                            file_input = self.driver.find_element(By.XPATH, '//input[@type="file"]')
-                                        file_input.send_keys(file_path)
-                                        time.sleep(2)
-                                        import_btn = WebDriverWait(self.driver, 10).until(EC.element_to_be_clickable(
-                                            (By.XPATH, '/html/body/div[6]/div[2]/div/div/div[3]/div/button[2]/span')))
-                                        ActionChains(self.driver).move_to_element(import_btn).click().perform()
-                                        self.log("重新导入完成，等待验证码生成...")
-                                        self.simulate_human_delay(2.0, 3.5)
-                                    except Exception as e:
-                                        self.log(f"重新导入时发生错误: {e}")
-                                else:
-                                    self.driver.get("https://inv-veri.chinatax.gov.cn/index.html")
-                                    self.simulate_human_delay(2.0, 4.0)
-                                    try:
-                                        file_cy_btn = WebDriverWait(self.driver, 10).until(
-                                            EC.element_to_be_clickable((By.XPATH, '//*[@id="fileCy"]')))
-                                        ActionChains(self.driver).move_to_element(file_cy_btn).pause(
-                                            random.uniform(0.5, 1.2)).click().perform()
-                                        self.simulate_human_delay(0.8, 1.5)
+                                        file_input = self.driver.find_element(By.XPATH,
+                                                                              '/html/body/div[6]/div[2]/div/div/div[2]/div[1]/div/div/div[1]/div')
+                                        if file_input.tag_name != 'input':
+                                            file_input = file_input.find_element(By.XPATH, './/input[@type="file"]')
+                                    except:
                                         file_input = self.driver.find_element(By.XPATH, '//input[@type="file"]')
-                                        file_input.send_keys(file_path)
-                                        self.simulate_human_delay(0.8, 1.5)
-                                        import_btn = WebDriverWait(self.driver, 10).until(
-                                            EC.element_to_be_clickable((By.XPATH, '//*[@id="fileCyBtn"]')))
-                                        ActionChains(self.driver).move_to_element(import_btn).click().perform()
-                                        self.log("重新导入完成，等待验证码生成...")
-                                        self.simulate_human_delay(2.0, 3.5)
-                                    except Exception as e:
-                                        self.log(f"重新导入时发生错误: {e}")
+                                    file_input.send_keys(file_path)
+
+                                    self.log("重新输入文件路径，等待系统解析 (最长30秒)...")
+                                    try:
+                                        WebDriverWait(self.driver, 30, poll_frequency=0.2).until(
+                                            lambda d: any(
+                                                "成功" in p.text for p in (
+                                                        d.find_elements(By.XPATH, '/html/body/div[6]/div') +
+                                                        d.find_elements(By.XPATH, '/html/body/div[7]/div') +
+                                                        d.find_elements(By.XPATH, '/html/body/div[8]/div')
+                                                ) if p.is_displayed()
+                                            )
+                                        )
+                                        self.log("✅ 重新导入成功！准备点击确认...")
+                                        time.sleep(0.5)
+                                    except Exception:
+                                        self.log("❌ 重新导入超过30秒未响应，判断为导入失败，抛弃此次尝试...")
+                                        continue
+
+                                    import_btn = WebDriverWait(self.driver, 10).until(
+                                        lambda d: (d.find_elements(By.XPATH,
+                                                                   '/html/body/div[7]/div[2]/div/div/div[3]/div/button[2]/span') or
+                                                   d.find_elements(By.XPATH,
+                                                                   '/html/body/div[7]/div[2]/div/div/div[3]/div/button[2]') or
+                                                   d.find_elements(By.XPATH, '//button[span[contains(text(), "导入")]]'))
+                                    )
+                                    self.driver.execute_script("arguments[0].click();", import_btn[0])
+                                    self.log("重新导入点击完成，等待验证码生成...")
+                                    self.simulate_human_delay(2.0, 3.5)
+                                except Exception as e:
+                                    self.log(f"重新导入时发生错误: {e}")
                                 continue
 
                         # ================== 5. 处理查验成功并打印 ==================
-                        if is_new_ver:
-                            print_btns = self.driver.find_elements(By.XPATH, '//*[@id="print-btn"]')
-                            if print_btns:
-                                self.log("✅ 查验成功！已找到打印按钮，准备触发原生静默打印保存...")
-                                self.simulate_human_delay(1.5, 2.5)
-                                self._execute_print_and_save(file_path, print_btns[0])
+                        print_btns = self.driver.find_elements(By.XPATH, '//*[@id="print-btn"]')
+                        if print_btns:
+                            self.log("✅ 查验成功！已找到打印按钮，准备触发原生静默打印保存...")
+                            self.simulate_human_delay(1.5, 2.5)
+
+                            # 接收保存结果，如果保存成功才 break
+                            is_saved = self._execute_print_and_save(file_path, print_btns[0])
+                            if is_saved:
                                 break
                             else:
-                                self.log("⚠ 未获取到查验结果，跳出当前重试...")
-                                break
+                                raise Exception("静默打印未生成文件，主动抛出异常交由重试机制处理")
                         else:
-                            iframes = self.driver.find_elements(By.XPATH, '//*[@id="dialog-body"]')
-                            if iframes:
-                                self.log("✅ 查验成功！准备触发原生静默打印保存...")
-                                self.driver.switch_to.frame(iframes[0])
-                                self.simulate_human_delay(1.5, 2.5)
-                                print_btns = self.driver.find_elements(By.XPATH, '//*[@id="printfp"]')
-                                if print_btns:
-                                    self._execute_print_and_save(file_path, print_btns[0])
-                                    self.driver.switch_to.default_content()
-                                else:
-                                    self.log("⚠ 进入了结果页面但未找到打印按钮。")
-                                    self.driver.switch_to.default_content()
-                                break
-                            else:
-                                self.log("⚠ 未获取到查验结果，跳出当前重试...")
-                                break
+                            self.log("⚠ 未获取到查验结果 (可能是验证码识别错误)，自动刷新验证码重试...")
+                            try:
+                                yzm_img_element = self.driver.find_element(By.XPATH,
+                                                                           '/html/body/div[1]/div[2]/div/div[1]/div[1]/div[3]/form/div[6]/div/div/div/a/img')
+                                self.driver.execute_script("arguments[0].click();", yzm_img_element)
+                                self.simulate_human_delay(2.0, 3.0)
+                            except:
+                                pass
+                            continue
 
                     self.simulate_human_delay(1.0, 2.0)
 
                 except Exception as inner_e:
-                    # 【核心修改】捕获异常后，实施上限控制与强制休眠
                     self.log(f"❌ 捕获到网页异常/加载超时: {str(inner_e)[:100]}...")
                     if retry_count < 3:
                         self.log(f"➡ 强制休眠 30 秒防封，随后将该文件移至队列尾部 (当前重试 {retry_count + 1}/3)...")
@@ -727,16 +705,20 @@ class TaxInvoiceScraperApp:
         save_path = os.path.abspath(os.path.join(self.res_dir, new_filename))
 
         css_orientation = "landscape" if "横向" in self.orientation_mode.get() else "portrait"
-        self.driver.execute_script(f"""
-            var style = document.createElement('style');
-            style.innerHTML = '@media print {{ @page {{ size: {css_orientation} !important; }} * {{ -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }} }}';
-            document.head.appendChild(style);
-        """)
 
-        self.log("等待发票组件(印章/底纹)渲染...")
-        time.sleep(2.0)
+        try:
+            self.driver.execute_script(f"""
+                var style = document.createElement('style');
+                style.innerHTML = '@media print {{ @page {{ size: {css_orientation} !important; }} * {{ -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }} }}';
+                document.head.appendChild(style);
+            """)
+            self.log("等待发票组件(印章/底纹)渲染...")
+            time.sleep(2.0)
+            # 这里是容易断连的地方，我们将其保护起来
+            self.driver.execute_script("arguments[0].click();", print_btn_element)
+        except Exception as e:
+            self.log(f"⚠ 触发打印时断开连接(Chrome静默打印常见现象)，不影响后台下载，尝试继续侦听...")
 
-        self.driver.execute_script("arguments[0].click();", print_btn_element)
         self.log("正在后台静默下载并更名...")
 
         success_flag = False
@@ -749,13 +731,23 @@ class TaxInvoiceScraperApp:
                 for nf in new_files:
                     if nf.lower().endswith(".pdf"):
                         if nf != new_filename:
-                            try:
-                                old_path = os.path.join(self.res_dir, nf)
-                                time.sleep(0.5)
-                                os.rename(old_path, save_path)
-                                self.log(f"✅ 检测到新文件并成功更名: {new_filename}")
-                            except Exception as e:
-                                self.log(f"❌ 更名尝试失败: {e}")
+                            old_path = os.path.join(self.res_dir, nf)
+                            rename_success = False
+
+                            for attempt in range(10):
+                                try:
+                                    os.rename(old_path, save_path)
+                                    self.log(f"✅ 检测到新文件并成功更名: {new_filename}")
+                                    rename_success = True
+                                    break
+                                except PermissionError:
+                                    time.sleep(1)
+                                except Exception as e:
+                                    self.log(f"❌ 更名过程中发生其他错误: {e}")
+                                    break
+
+                            if not rename_success:
+                                self.log(f"❌ 经过多次尝试，更名依然失败: {nf}")
                         else:
                             self.log(f"✅ 文件已按正确名称保存: {nf}")
                         success_flag = True
@@ -765,15 +757,20 @@ class TaxInvoiceScraperApp:
 
         if not success_flag:
             self.log("⚠️ 侦听超时，未检测到新生成的 PDF 文件。")
+        else:
+            self.simulate_human_delay(1.5, 2.5)
+            self.log(f"🎉 成功！文件已静默保存至: {save_path}")
 
-        self.simulate_human_delay(1.5, 2.5)
-        self.log(f"🎉 成功！文件已静默保存至: {save_path}")
+        try:
+            handles = self.driver.window_handles
+            if len(handles) > 1:
+                self.driver.switch_to.window(handles[-1])
+                self.driver.close()
+                self.driver.switch_to.window(handles[0])
+        except Exception:
+            pass
 
-        handles = self.driver.window_handles
-        if len(handles) > 1:
-            self.driver.switch_to.window(handles[-1])
-            self.driver.close()
-            self.driver.switch_to.window(handles[0])
+        return success_flag
 
 
 if __name__ == "__main__":
